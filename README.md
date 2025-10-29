@@ -40,11 +40,3 @@ docker run -p 8080:8080 -p 8081:8081 --pull always -e LIVEBOOK_PASSWORD="secures
 # Or if you need to run on different ports:
 docker run -p 8090:8090 -p 8091:8091 --pull always -e LIVEBOOK_PORT=8090 -e LIVEBOOK_IFRAME_PORT=8091 ghcr.io/livebook-dev/livebook
 ```
-
-To deploy Livebook on your cloud platform, see our [Docker Deployment](docs/deployment/docker.md) guide.
-
-For CUDA support, [see images with the "cuda" tag](https://github.com/livebook-dev/livebook/pkgs/container/livebook).
-
-To try out features from the main branch you can alternatively
-use the `ghcr.io/livebook-dev/livebook:nightly` image.
-See [Livebook images](https://github.com/livebook-dev/livebook/pkgs/container/livebook).
