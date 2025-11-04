@@ -5,6 +5,7 @@
 - `livebooks/`: Livebook exercises (see below)
 - `chat_server/`: Chat server project
 - `code_examples/`: other project ideas
+- `pdf/`: Slide handouts
 
 ## Livebook Installation
 
