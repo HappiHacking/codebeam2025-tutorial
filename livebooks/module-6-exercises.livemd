@@ -1,0 +1,118 @@
+# BEAM Patterns & Anti-Patterns - Exercises
+
+```elixir
+Mix.install([{:kino, "~> 0.17.0"}])
+```
+
+```elixir
+Code.require_file("quiz.ex", __DIR__)
+Code.require_file("process_viz.ex", __DIR__)
+```
+
+## Introduction
+
+Welcome to the hands-on exercises for BEAM Patterns & Anti-Patterns!
+
+Each section has runnable code cells. Execute them, experiment, and observe what happens!
+
+
+## Module 6 Review
+
+<!--
+quiz
+
+### Question 1
+
+What is the "God process" anti-pattern?
+
+- [x] One process handling multiple unrelated domains
+- [ ] A process that never crashes
+- [x] Single serialization bottleneck for all operations
+- [ ] A supervisor process that restarts too frequently
+
+### Question 2
+
+When should you use a short-lived temporary worker?
+
+- [x] For one-off tasks that exit after completion
+- [x] When you want immediate heap reclamation
+- [ ] For stateful long-running services
+- [ ] Only when you have fewer than 1000 processes
+
+### Question 3
+
+What restart strategy should you use for independent workers?
+
+- [x] `one_for_one` - restart only the failed child
+- [ ] `one_for_all` - restart all children
+- [ ] `rest_for_one` - restart failed and subsequent children
+- [ ] No supervisor needed for independent workers
+
+### Question 4
+
+What causes a binary leak in BEAM?
+
+- [x] Keeping a small sub-binary slice in long-lived state
+- [x] The sub-binary reference keeps entire original binary alive
+- [ ] Creating too many small binaries
+- [ ] Concatenating binaries with `<<B1/binary, B2/binary>>`
+
+### Question 5
+
+How do you fix a binary reference leak?
+
+- [x] Use `binary:copy/1` to create independent copy of slices
+- [x] Call `erlang:garbage_collect/0` to clear accumulated references
+- [x] Copy the slice when storing in long-lived state
+- [ ] Convert to a list and back to binary
+
+### Question 6
+
+What is backpressure in process communication?
+
+- [ ] Compressing messages before sending
+- [x] Rejecting or slowing work when a process is overloaded
+- [x] Preventing mailbox from growing unbounded
+- [ ] Using higher priority processes
+
+### Question 7
+
+When should you use GenServer instead of a simple `spawn`?
+
+- [x] When you need stateful request-response patterns
+- [ ] Always, GenServer is always better than spawn
+- [x] When you need a structured message handling loop
+- [ ] For all computational tasks
+
+### Question 8
+
+What makes a good message design?
+
+- [x] Send references to large data instead of copying it
+- [x] Keep messages small when possible
+- [ ] Always use GenServer.call for reliability
+- [ ] Pack as much data as possible into each message
+
+### Question 9
+
+Which supervision strategy for this pipeline: Logger -> Database -> Cache?
+
+- [ ] `one_for_one` - they're independent
+- [x] `rest_for_one` - Cache depends on Database, both depend on Logger
+- [ ] `one_for_all` - restart everything on any failure
+- [ ] No supervision needed
+
+### Question 10
+
+What's wrong with using process dictionary for state?
+
+- [x] Hidden state makes code hard to test and reason about
+- [x] State is implicit rather than explicit
+- [ ] Process dictionary is slower than GenServer state
+- [ ] Process dictionary doesn't work with supervisors
+-->
+
+```elixir
+Quiz.render_from_file(__DIR__ <> "/module-6-exercises.livemd", quiz: 1)
+```
+

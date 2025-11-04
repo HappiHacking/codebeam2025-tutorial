@@ -1,0 +1,528 @@
+# Module 3 – Memory & Garbage Collection - Exercises
+
+```elixir
+Mix.install([{:kino, "~> 0.17.0"}])
+```
+
+```elixir
+Code.require_file("quiz.ex", __DIR__)
+Code.require_file("process_viz.ex", __DIR__)
+```
+
+## Introduction
+
+Welcome to the hands-on exercises for Module 3 – Memory & Garbage Collection!
+
+Each section has runnable code cells. Execute them, experiment, and observe what happens!
+
+## Term Size and Memory
+
+### Process snapshot
+
+```elixir
+:erlang.process_info(self(), [:memory, :heap_size, :total_heap_size, :stack_size, :message_queue_len])
+```
+
+Create a tuple-heavy workload vs list-heavy workload; watch `:heap_size` and `:total_heap_size` shift.
+
+### Mailbox growth & GC
+
+```elixir
+# Enqueue many small messages
+pid = self()
+spawn(fn -> for i <- 1..100_000, do: send(pid, {:ping, i}) end)
+
+:erlang.process_info(self(), :message_queue_len)
+# Drain them
+receive do _ -> :ok end  # wrap in a loop in practice
+# Then force a GC and re-check memory
+:erlang.garbage_collect(self())
+:erlang.process_info(self(), :memory)
+```
+
+### X/Y registers in disassembly
+
+   If you have dev tools available:
+
+```erlang
+% Erlang shell:
+erts_debug:df(your_module).  % Disassemble; look for X0..Xn and Y slots
+```
+
+This shows BEAM instructions using **X** (arguments/temporaries) and **Y** (stack locals).
+
+## Process Memory Inspection
+
+### Exercise 1: Process Memory Layout Exploration
+
+**Goal:** Understand how heap, stack, and mailbox memory are measured and tracked
+
+##### Task 1.1: Baseline Memory Snapshot
+
+```erlang
+% Get initial memory state
+InitialInfo = process_info(self(), [memory, heap_size, stack_size,
+                                     total_heap_size, message_queue_len]),
+io:format("Initial state: ~p~n", [InitialInfo]).
+```
+
+##### Task 1.2: Allocate Heap Data
+
+```erlang
+% Create heap data
+TupleData = list_to_tuple(lists:seq(1, 1000)),
+ListData = lists:seq(1, 1000),
+MapData = maps:from_list([{I, I*2} || I <- lists:seq(1, 100)]),
+
+% Measure heap growth
+AfterAlloc = process_info(self(), [memory, heap_size]),
+io:format("After allocation: ~p~n", [AfterAlloc]).
+```
+
+**Observe:** Heap size grows to accommodate boxed terms. Memory includes both heap and other process overhead.
+
+##### Task 1.3: Message Queue Impact
+
+```erlang
+% Send messages to self
+[self() ! {msg, I} || I <- lists:seq(1, 100)],
+
+WithMessages = process_info(self(), [memory, message_queue_len]),
+io:format("With 100 messages: ~p~n", [WithMessages]),
+
+% Drain mailbox
+FlushMessages = fun F() ->
+    receive _ -> F()
+    after 0 -> ok
+    end
+end,
+FlushMessages(),
+
+AfterDrain = process_info(self(), [memory, message_queue_len]),
+io:format("After drain: ~p~n", [AfterDrain]).
+```
+
+**Observe:** Messages add to process memory. Draining doesn't immediately free memory until GC runs.
+
+**Discussion:** In a GenServer with 10,000 queued messages, what happens to memory? When does it get reclaimed?
+
+## Binary Storage and Leaks
+
+### Exercise 2: Binary Threshold and Sub-Binary Retention
+
+**Goal:** Observe the 64-byte threshold and demonstrate sub-binary leaks
+
+##### Task 2.1: Heap vs Refc Binary Transition
+
+```erlang
+% Test binaries around the 64-byte threshold
+SmallBin = list_to_binary(lists:duplicate(63, $x)),
+LargeBin = list_to_binary(lists:duplicate(64, $x)),
+
+SmallSize = erts_debug:size(SmallBin),
+LargeSize = erts_debug:size(LargeBin),
+
+io:format("63 bytes: ~p words~n", [SmallSize]),
+io:format("64 bytes: ~p words~n", [LargeSize]),
+io:format("Size jump: ~p -> ~p~n", [SmallSize, LargeSize]).
+```
+
+**Observe:** At 64 bytes, the size drops because only the ProcBin wrapper is counted, not the off-heap payload.
+
+##### Task 2.2: Simulate Sub-Binary Leak
+
+```erlang
+% Create large binary
+HugeBinary = crypto:strong_rand_bytes(1000000),  % 1MB
+
+% Extract tiny slice (creates sub-binary)
+<<Header:100/binary, _Rest/binary>> = HugeBinary,
+
+% Check binary memory
+BeforeCopy = erlang:memory(binary),
+io:format("Binary memory with sub-binary: ~p bytes~n", [BeforeCopy]),
+
+% The sub-binary keeps the entire 1MB alive!
+% Fix by copying
+IndependentHeader = binary:copy(Header),
+
+% Let original go out of scope
+HugeBinary2 = undefined,
+erlang:garbage_collect(),
+
+AfterCopy = erlang:memory(binary),
+io:format("Binary memory after copy+GC: ~p bytes~n", [AfterCopy]),
+io:format("Reclaimed: ~p bytes~n", [BeforeCopy - AfterCopy]).
+```
+
+**Observe:** The sub-binary reference keeps the entire 1MB payload alive until you copy the slice.
+
+**Discussion:** When processing large files line-by-line, should you copy each line extracted from the file binary? What's the trade-off?
+
+## Generational GC Triggers
+
+### Exercise 3: Minor vs Major Garbage Collection
+
+**Goal:** Observe when minor and major GCs trigger and their costs
+
+##### Task 3.1: Baseline GC Stats
+
+```erlang
+% Get initial GC counts
+% Get the garbage_collection tuple for process-specific minor GCs
+{garbage_collection, GCInfo} = process_info(self(), garbage_collection),
+
+% Extract minor_gcs from process info
+InitialMinor = proplists:get_value(minor_gcs, GCInfo),
+
+% Get major_gcs from system-wide statistics
+{_, InitialMajor, _} = erlang:statistics(garbage_collection),
+
+io:format("Initial GCs - Minor (process): ~p, Major (system): ~p~n", [InitialMinor, InitialMajor]).
+```
+
+##### Task 3.2: Trigger Minor GCs with Transient Data
+
+```erlang
+% Allocate and immediately discard (triggers minor GCs)
+[begin
+    Temp = lists:seq(1, 1000),
+    length(Temp)
+end || _ <- lists:seq(1, 100)],
+
+% Get process-specific minor GCs
+{garbage_collection, GCInfoAfter} = process_info(self(), garbage_collection),
+MinorAfter = proplists:get_value(minor_gcs, GCInfoAfter),
+
+% Get system-wide major GCs
+{_, MajorAfter, _} = erlang:statistics(garbage_collection),
+
+io:format("After transient work - Minor (process): ~p (+~p), Major (system): ~p (+~p)~n",
+          [MinorAfter, MinorAfter - InitialMinor,
+           MajorAfter, MajorAfter - InitialMajor]).
+```
+
+**Observe:** Multiple minor GCs triggered. No major GCs because data doesn't survive.
+
+##### Task 3.3: Force Major GC
+
+```erlang
+% Accumulate long-lived data
+Accumulated = lists:foldl(fun(I, Acc) ->
+    [{I, lists:seq(1, 100)} | Acc]
+end, [], lists:seq(1, 1000)),
+
+% Get process-specific minor GCs before
+{garbage_collection, GCInfoBefore} = process_info(self(), garbage_collection),
+MinorBefore = proplists:get_value(minor_gcs, GCInfoBefore),
+
+% Get system-wide major GCs before
+{_, MajorBefore, _} = erlang:statistics(garbage_collection),
+
+% Force full sweep
+erlang:garbage_collect(),
+
+% Get process-specific minor GCs after
+{garbage_collection, GCInfoFinal} = process_info(self(), garbage_collection),
+MinorFinal = proplists:get_value(minor_gcs, GCInfoFinal),
+
+% Get system-wide major GCs after
+{_, MajorFinal, _} = erlang:statistics(garbage_collection),
+
+io:format("After major GC - Minor (process): ~p, Major (system): ~p (+~p)~n",
+          [MinorFinal, MajorFinal, MajorFinal - MajorBefore]),
+
+% Keep reference so data isn't optimized away
+length(Accumulated).
+```
+
+**Observe:** Major GC count increments. Both young and old generations collected.
+
+**Discussion:** Why does BEAM default to running a major GC every 65535 minor GCs? What would happen if you never ran major GCs?
+
+## Memory Leak Patterns
+
+### Exercise 4: Common Memory Leak Scenarios
+
+**Goal:** Identify and fix typical memory leak patterns in BEAM
+
+##### Task 4.1: Mailbox Bloat Simulation
+
+```erlang
+% Slow consumer process
+SlowConsumer = spawn(fun Loop() ->
+    receive
+        {work, _Data} ->
+            timer:sleep(100),  % Slow processing
+            Loop();
+        {stats, From} ->
+            Info = process_info(self(), [message_queue_len, memory]),
+            From ! {stats, Info},
+            Loop();
+        stop -> ok
+    end
+end),
+
+% Fast producer
+[SlowConsumer ! {work, lists:seq(1, 100)} || _ <- lists:seq(1, 500)],
+
+timer:sleep(100),
+
+SlowConsumer ! {stats, self()},
+receive
+    {stats, Stats} ->
+        io:format("Slow consumer stats: ~p~n", [Stats])
+after 1000 -> timeout
+end,
+
+SlowConsumer ! stop.
+```
+
+**Observe:** Message queue grows faster than consumer can process. Memory keeps climbing.
+
+##### Task 4.2: Binary Reference Accumulation
+
+```erlang
+% Relay process that touches binaries without storing them
+RelayWithoutGC = spawn(fun Loop(Count) ->
+    receive
+        {relay, Bin} ->
+            % Just forward it, don't store
+            % But ProcBin reference stays until GC
+            byte_size(Bin),  % Touch the binary
+            Loop(Count + 1);
+        {count, From} ->
+            BinInfo = process_info(self(), [binary, memory]),
+            From ! {relay_stats, Count, BinInfo},
+            Loop(Count)
+    end
+end),
+
+% Send many large binaries through relay
+[begin
+    BigBin = crypto:strong_rand_bytes(10000),
+    RelayWithoutGC ! {relay, BigBin}
+end || _ <- lists:seq(1, 100)],
+
+timer:sleep(50),
+
+RelayWithoutGC ! {count, self()},
+receive
+    {relay_stats, Count, BinInfo} ->
+        io:format("Relay relayed ~p messages~n", [Count]),
+        io:format("Binary memory held: ~p~n", [BinInfo])
+after 1000 -> timeout
+end.
+```
+
+**Observe:** Even though relay doesn't store binaries, it accumulates ProcBin references until GC.
+
+**Discussion:** How would you fix this relay pattern? When should you call `erlang:garbage_collect()` or use `hibernate`?
+
+## GC Tuning and Hibernation
+
+### Exercise 5: Tuning GC Behavior
+
+**Goal:** Learn to control GC behavior with process flags
+
+##### Task 5.1: Set Minimum Heap Size
+
+```erlang
+% Spawn with small initial heap
+SmallHeap = spawn_opt(fun() ->
+    Data = lists:seq(1, 10000),
+    receive after 5000 -> length(Data) end
+end, [{min_heap_size, 100}]),
+
+% Spawn with large initial heap
+LargeHeap = spawn_opt(fun() ->
+    Data = lists:seq(1, 10000),
+    receive after 5000 -> length(Data) end
+end, [{min_heap_size, 10000}]),
+
+timer:sleep(100),
+
+% Get heap_size and garbage_collection info
+[{heap_size, SmallHeapSize}, {garbage_collection, SmallGCInfo}] =
+    process_info(SmallHeap, [heap_size, garbage_collection]),
+SmallMinorGCs = proplists:get_value(minor_gcs, SmallGCInfo),
+
+[{heap_size, LargeHeapSize}, {garbage_collection, LargeGCInfo}] =
+    process_info(LargeHeap, [heap_size, garbage_collection]),
+LargeMinorGCs = proplists:get_value(minor_gcs, LargeGCInfo),
+
+io:format("Small heap process - heap_size: ~p, minor_gcs: ~p~n",
+          [SmallHeapSize, SmallMinorGCs]),
+io:format("Large heap process - heap_size: ~p, minor_gcs: ~p~n",
+          [LargeHeapSize, LargeMinorGCs]).
+```
+
+**Observe:** Larger initial heap reduces early GC pressure.
+
+##### Task 5.2: Hibernation for Memory Reduction
+
+```erlang
+% Demonstrate hibernation memory reduction in a spawned process
+Parent = self(),
+
+% Spawn a process that will hibernate - store the PID
+TestPid = spawn(fun() ->
+    % Allocate significant data
+    BigData = lists:seq(1, 10000),
+    Map = maps:from_list([{I, lists:seq(1, 100)} || I <- lists:seq(1, 100)]),
+
+    % Force the data to be used (prevents optimization)
+    _ = length(BigData),
+    _ = map_size(Map),
+
+    % Report memory before hibernation
+    BeforeStats = process_info(self(), [heap_size, total_heap_size, memory]),
+    Parent ! {before_hibernate, BeforeStats},
+
+    % Wait for hibernate command
+    receive
+        hibernate_now ->
+            % This function will be called when process wakes up
+            WakeupFun = fun() ->
+                AfterStats = process_info(self(), [heap_size, total_heap_size, memory]),
+                Parent ! {after_hibernate, AfterStats},
+                % Keep alive to allow inspection
+                receive done -> ok end
+            end,
+            % Hibernate - this never returns, it replaces the call stack
+            erlang:hibernate(erlang, apply, [WakeupFun, []])
+    end
+end),
+
+% Collect before stats
+receive
+    {before_hibernate, BeforeStats} ->
+        io:format("Before hibernate: ~p~n", [BeforeStats])
+after 2000 ->
+    io:format("Timeout waiting for before stats~n")
+end,
+
+% Tell process to hibernate
+TestPid ! hibernate_now,
+
+% Wake it up by sending any message (hibernating processes wake on any message)
+timer:sleep(100),
+TestPid ! wakeup,
+
+% Collect after stats
+receive
+    {after_hibernate, AfterStats} ->
+        io:format("After hibernate: ~p~n", [AfterStats])
+after 2000 ->
+    io:format("Timeout waiting for after stats~n")
+end,
+
+% Clean up
+TestPid ! done.
+```
+
+**Observe:** Hibernation compacts heap and releases old generation, dramatically reducing memory.
+
+**Discussion:** When should a GenServer use `{:noreply, state, :hibernate}`? What's the cost?
+
+
+## Module 3 Review
+
+<!--
+quiz
+
+### Question 1
+
+Where does a refc binary's payload live?
+
+- [ ] On the process heap
+- [x] Off-heap in the binary allocator
+- [ ] In the process stack
+- [ ] In ETS
+
+### Question 2
+
+What causes a sub-binary leak?
+
+- [x] Keeping a small slice of a large binary in long-lived state
+- [ ] Creating too many small binaries
+- [x] The sub-binary reference keeps the entire original binary alive
+- [ ] Binary concatenation in loops
+
+### Question 3
+
+When does a minor GC run?
+
+- [x] When the young generation heap approaches its limit
+- [ ] Every 65535 reductions
+- [x] When receiving a large message
+- [ ] Only when explicitly called
+
+### Question 4
+
+What is the main benefit of generational GC?
+
+- [x] Minor GCs only scan young objects, making them fast
+- [ ] It eliminates the need for major GCs
+- [ ] Memory usage is reduced by 50%
+- [x] Long-lived data in old generation isn't scanned on every GC
+
+### Question 5
+
+A process has 10,000 messages in its mailbox. What happens to that memory?
+
+- [ ] Messages are automatically discarded after 1000
+- [x] Memory remains allocated until messages are received and GC runs
+- [ ] The process automatically hibernates
+- [ ] Messages are moved to ETS
+
+### Question 6
+
+How do you fix a sub-binary leak?
+
+- [x] Use `binary:copy/1` to create an independent copy of the slice
+- [ ] Force garbage collection with `erlang:garbage_collect/0`
+- [ ] Set the process to off-heap message queue mode
+- [x] Copy the slice when you intend to keep it in long-lived state
+
+### Question 7
+
+What does hibernation do to a process?
+
+- [x] Compacts heap and releases old generation memory
+- [x] Shrinks memory footprint aggressively
+- [ ] Pauses the process permanently
+- [ ] Moves the process to a different scheduler
+
+### Question 8
+
+Why might a relay process accumulate binary memory even though it doesn't store binaries?
+
+- [x] ProcBin references stay alive until the process runs GC
+- [ ] Binaries are automatically stored in process dictionary
+- [x] Touching binaries creates ProcBin wrappers on the heap
+- [ ] The binary allocator never frees memory
+
+### Question 9
+
+At what byte size does a binary switch from heap storage to refc storage?
+
+- [ ] 32 bytes
+- [ ] 48 bytes
+- [x] 64 bytes
+- [ ] 128 bytes
+
+### Question 10
+
+What triggers a major (full sweep) GC?
+
+- [x] After N minor GCs (controlled by fullsweep_after)
+- [x] Old generation getting full
+- [ ] Every time a large message is received
+- [ ] When calling `erlang:garbage_collect/0` (triggers minor by default)
+-->
+
+```elixir
+Quiz.render_from_file(__DIR__ <> "/module-3-exercises.livemd", quiz: 1)
+```
+

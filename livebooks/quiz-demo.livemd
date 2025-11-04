@@ -1,0 +1,77 @@
+# Quiz Demo
+
+```elixir
+Mix.install([{:kino, "~> 0.17.0"}])
+```
+
+## Load Quiz Module
+
+```elixir
+Code.require_file("quiz.ex", __DIR__)
+```
+
+## Sample Quiz
+
+```elixir
+quiz_markdown = """
+## Question 1
+What is a process in BEAM?
+
+- [ ] A thread managed by the operating system
+- [x] A lightweight concurrent unit managed by the VM
+- [ ] A function that runs asynchronously
+- [ ] A container for state
+
+## Question 2
+How are BEAM processes scheduled?
+
+- [ ] By the operating system kernel
+- [x] By the BEAM VM scheduler using preemptive scheduling
+- [ ] Using cooperative multitasking only
+- [ ] Randomly based on priority
+
+## Question 3
+What happens when a BEAM process crashes?
+
+- [ ] The entire VM shuts down
+- [ ] All linked processes are notified
+- [x] Only linked/monitoring processes are affected
+- [ ] Nothing, processes cannot crash
+
+## Question 4
+What is the typical memory footprint of a BEAM process?
+
+- [x] Around 2-3 KB initially
+- [ ] Around 1 MB initially
+- [ ] Around 100 bytes initially
+- [ ] Same as an OS thread (8 MB+)
+"""
+
+Quiz.render(quiz_markdown)
+```
+
+## Custom Quiz Example
+
+Try creating your own quiz by modifying the markdown below:
+
+```elixir
+custom_quiz = """
+## Question 1
+What does OTP stand for?
+
+- [ ] Object Transfer Protocol
+- [x] Open Telecom Platform
+- [ ] Optimal Thread Processing
+- [ ] Operating Time Protocol
+
+## Question 2
+Which supervision strategy restarts all children when one fails?
+
+- [ ] one_for_one
+- [x] one_for_all
+- [ ] rest_for_one
+- [ ] simple_one_for_one
+"""
+
+Quiz.render(custom_quiz)
+```

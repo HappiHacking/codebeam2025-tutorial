@@ -1,0 +1,529 @@
+# Module 4 – Scheduling & Concurrency - Exercises
+
+## Section
+
+```elixir
+Mix.install([{:kino, "~> 0.17.0"}])
+```
+
+```elixir
+Code.require_file("quiz.ex", __DIR__)
+Code.require_file("process_viz.ex", __DIR__)
+```
+
+## Introduction
+
+Welcome to the hands-on exercises for Module 4 – Scheduling & Concurrency!
+
+Each section has runnable code cells. Execute them, experiment, and observe what happens!
+
+## Scheduler Configuration and Utilization
+
+### Exercise 1: Scheduler Setup Analysis
+
+**Goal:** Understand your system's scheduler configuration and baseline utilization
+
+##### Task 1.1: Inspect Scheduler Configuration
+
+```erlang
+% Get basic scheduler info
+Schedulers = erlang:system_info(schedulers),
+Online = erlang:system_info(schedulers_online),
+LogicalProcs = erlang:system_info(logical_processors),
+
+io:format("Schedulers: ~p, Online: ~p, Logical CPUs: ~p~n",
+          [Schedulers, Online, LogicalProcs]),
+
+% Check dirty schedulers
+DirtyCPU = erlang:system_info(dirty_cpu_schedulers),
+DirtyIO = erlang:system_info(dirty_io_schedulers),
+io:format("Dirty CPU: ~p, Dirty I/O: ~p~n", [DirtyCPU, DirtyIO]).
+```
+
+##### Task 1.2: Measure Baseline Scheduler Utilization
+
+```erlang
+% Enable wall time tracking
+erlang:system_flag(scheduler_wall_time, true),
+erlang:statistics(scheduler_wall_time),  % Reset baseline
+
+timer:sleep(5000),  % Wait 5 seconds
+
+% Get utilization
+WallTime = erlang:statistics(scheduler_wall_time),
+
+lists:foreach(fun({SchedId, Active, Total}) ->
+    Util = case Total of
+        0 -> 0.0;
+        _ -> (Active / Total) * 100
+    end,
+    io:format("Scheduler ~p: ~.1f% utilized~n", [SchedId, Util])
+end, WallTime).
+```
+
+**Observe:** Baseline utilization when system is idle vs under load.
+
+**Discussion:** Why does BEAM use one scheduler per core? What happens if you have more schedulers than cores?
+
+## Process Priority and Run Queues
+
+### Exercise 2: Priority Scheduling Behavior
+
+**Goal:** Observe how process priority affects scheduling order
+
+##### Task 2.1: Check Current Run Queue State
+
+```erlang
+% Get run queue info
+TotalRunnable = erlang:statistics(run_queue),
+PerScheduler = erlang:statistics(run_queues),
+
+io:format("Total runnable processes: ~p~n", [TotalRunnable]),
+io:format("Per-scheduler queues: ~p~n", [PerScheduler]).
+```
+
+##### Task 2.2: Create Competing Processes with Different Priorities
+
+```erlang
+% Low priority process (with termination)
+LowPid = spawn(fun() ->
+    process_flag(priority, low),
+    Loop = fun LoopFun(Count) ->
+        lists:sum(lists:seq(1, 1000)),
+        io:format("LOW process iteration~n"),
+        timer:sleep(100),
+        receive
+            stop -> ok
+        after 0 ->
+            if Count < 30 -> LoopFun(Count + 1);  % Stop after 30 iterations
+               true -> ok
+            end
+        end
+    end,
+    Loop(0)
+end),
+
+% Normal priority process (with termination)
+NormalPid = spawn(fun() ->
+    process_flag(priority, normal),
+    Loop = fun LoopFun(Count) ->
+        lists:sum(lists:seq(1, 1000)),
+        io:format("NORMAL process iteration~n"),
+        timer:sleep(100),
+        receive
+            stop -> ok
+        after 0 ->
+            if Count < 30 -> LoopFun(Count + 1);  % Stop after 30 iterations
+               true -> ok
+            end
+        end
+    end,
+    Loop(0)
+end),
+
+% High priority process (with termination)
+HighPid = spawn(fun() ->
+    process_flag(priority, high),
+    Loop = fun LoopFun(Count) ->
+        lists:sum(lists:seq(1, 1000)),
+        io:format("HIGH process iteration~n"),
+        timer:sleep(100),
+        receive
+            stop -> ok
+        after 0 ->
+            if Count < 30 -> LoopFun(Count + 1);  % Stop after 30 iterations
+               true -> ok
+            end
+        end
+    end,
+    Loop(0)
+end),
+
+timer:sleep(3000),
+
+% Check their progress (reduction counts)
+{_, LowRed} = process_info(LowPid, reductions),
+{_, NormalRed} = process_info(NormalPid, reductions),
+{_, HighRed} = process_info(HighPid, reductions),
+
+io:format("Reductions - Low: ~p, Normal: ~p, High: ~p~n",
+          [LowRed, NormalRed, HighRed]),
+
+% Clean up - send stop messages
+LowPid ! stop,
+NormalPid ! stop,
+HighPid ! stop.
+```
+
+**Observe:** High priority process gets more CPU time. Output order favors high priority.
+
+**Discussion:** When should you use non-normal priorities? What are the risks of too many high-priority processes?
+
+## Reduction Counting and Preemption
+
+### Exercise 3: Measuring Reduction Costs
+
+**Goal:** Understand which operations consume reductions and trigger preemption
+
+##### Task 3.1: Measure Operation Costs
+
+```erlang
+MeasureReductions = fun(Name, Operation) ->
+    {_, RedBefore} = process_info(self(), reductions),
+    Operation(),
+    {_, RedAfter} = process_info(self(), reductions),
+    Cost = RedAfter - RedBefore,
+    io:format("~s: ~p reductions~n", [Name, Cost])
+end,
+
+MeasureReductions("Function call", fun() -> erlang:system_time() end),
+MeasureReductions("Message send", fun() -> self() ! test end),
+MeasureReductions("List creation", fun() -> lists:seq(1, 100) end),
+MeasureReductions("List length", fun() -> length(lists:seq(1, 100)) end),
+MeasureReductions("Map lookup", fun() -> maps:get(a, #{a => 1}) end),
+MeasureReductions("Process spawn", fun() -> spawn(fun() -> ok end) end).
+```
+
+**Observe:** Different operations have vastly different reduction costs. `length/1` is proportional to list size.
+
+##### Task 3.2: Observe Preemption in Action
+
+```erlang
+% Process that will use its full reduction budget
+PreemptionTest = spawn(fun() ->
+    Loop = fun LoopFun(Count) ->
+        % Check for stop message
+        receive
+            stop ->
+                io:format("Stopping after ~p iterations~n", [Count]),
+                ok
+        after 0 ->
+            {_, RedBefore} = process_info(self(), reductions),
+
+            % Do work until preempted
+            lists:sum(lists:seq(1, 10000)),
+
+            {_, RedAfter} = process_info(self(), reductions),
+            Used = RedAfter - RedBefore,
+
+            if Used > 2000 ->
+                io:format("Used ~p reductions (over budget, was preempted)~n", [Used]),
+                LoopFun(Count + 1);
+            true ->
+                io:format("Used ~p reductions (still within budget)~n", [Used]),
+                LoopFun(Count + 1)
+            end
+        end
+    end,
+    Loop(0)
+end),
+
+timer:sleep(2000),
+PreemptionTest ! stop.
+```
+
+**Observe:** Processes get preempted after consuming their reduction budget (typically 2000-4000).
+
+**Discussion:** Why reductions instead of time-based preemption? How does this affect responsiveness?
+
+## Process State Transitions
+
+### Exercise 4: Observing Process States
+
+**Goal:** Watch processes transition between RUNNING, WAITING, and SUSPENDED states
+
+##### Task 4.1: Create Process That Shows State Transitions
+
+```erlang
+% Queue monitoring process (renamed to avoid conflicts)
+QueueMonitor = spawn(fun() ->
+    Loop = fun LoopFun() ->
+        try
+            RunQueues = erlang:statistics(run_queues),
+            TotalRunnable = erlang:statistics(run_queue),
+
+            case TotalRunnable of
+                0 -> ok;
+                _ -> io:format("Run queues: ~p (total: ~p)~n", [RunQueues, TotalRunnable])
+            end
+        catch
+            _:_ -> ok  % Ignore statistics errors
+        end,
+
+        receive
+            stop -> ok
+        after 50 -> LoopFun()
+        end
+    end,
+    Loop()
+end),
+
+% Demo process showing states
+DemoPid = spawn(fun() ->
+    io:format("Process RUNNING initially~n"),
+
+    % Go to SUSPENDED (waiting for message)
+    io:format("Process entering receive (SUSPENDED)~n"),
+    receive
+        wakeup ->
+            io:format("Process RUNNING again (message received)~n"),
+            timer:sleep(100)
+    end,
+
+    % Another suspend with timeout
+    io:format("Process SUSPENDED with timeout~n"),
+    receive
+        never_comes -> ok
+    after 200 ->
+        io:format("Process RUNNING (timeout expired)~n")
+    end
+end),
+
+timer:sleep(50),
+DemoPid ! wakeup,
+
+timer:sleep(500),
+QueueMonitor ! stop,
+
+% Return ok to avoid pattern match issues
+ok.
+```
+
+**Observe:** Processes only consume scheduler time when RUNNING. Suspended processes wait outside run queues.
+
+**Discussion:** What makes a process transition from SUSPENDED to RUNNABLE? How does this affect system responsiveness?
+
+## Load Balancing and Work Stealing
+
+### Exercise 5: Scheduler Load Distribution
+
+**Goal:** Observe work stealing and load balancing across schedulers
+
+##### Task 5.1: Create Load Imbalance
+
+**Note:** If running in LiveBook, this should be in a separate cell from Task 4.1.
+
+```erlang
+% Ultra-lightweight version to avoid LiveBook crashes
+% Check initial balance
+InitialQueues = erlang:statistics(run_queues),
+io:format("Initial queues: ~p~n", [InitialQueues]),
+
+% Create just 5 very lightweight processes
+% Use a reference to track completion
+Ref = make_ref(),
+Parent = self(),
+
+% Spawn minimal workers
+WorkerPids = [spawn(fun() ->
+    % Absolutely minimal work
+    _ = 1 + 1,
+
+    % Report completion
+    Parent ! {Ref, done, self()}
+end) || _ <- lists:seq(1, 5)],
+
+% Collect completions
+[receive
+    {Ref, done, _Pid} -> ok
+after 100 ->
+    ok
+end || _ <- WorkerPids],
+
+% Final check
+FinalQueues = erlang:statistics(run_queues),
+io:format("Final queues: ~p~n", [FinalQueues]),
+
+ok.
+```
+
+**Observe:** Initial burst may create imbalance, but work stealing redistributes load over time.
+
+##### Task 5.2: Track Scheduler ID for Process Migration
+
+```erlang
+% Process that reports which scheduler it runs on
+MigrationTest = spawn(fun() ->
+    Loop = fun LoopFun(Count) ->
+        SchedId = erlang:system_info(scheduler_id),
+        io:format("Iteration ~p on scheduler ~p~n", [Count, SchedId]),
+
+        % Do some work
+        lists:sum(lists:seq(1, 5000)),
+        timer:sleep(200),
+
+        if Count < 10 ->
+            LoopFun(Count + 1);
+        true ->
+            io:format("Migration test completed~n"),
+            ok
+        end
+    end,
+    Loop(1)
+end).
+```
+
+**Observe:** Processes may migrate to different schedulers as load balancing occurs.
+
+**Discussion:** When does work stealing happen? What are the trade-offs of process migration vs cache locality?
+
+## Voluntary Yielding
+
+### Exercise 6: Manual Yield Control
+
+**Goal:** Understand when and how to voluntarily yield control
+
+##### Task 6.1: Compare Yielding vs Non-Yielding
+
+```erlang
+% Process that never yields manually
+NeverYield = spawn(fun() ->
+    Loop = fun LoopFun(Iterations) ->
+        if Iterations < 1000 ->
+            _ = lists:sum(lists:seq(1, 100)),
+            LoopFun(Iterations + 1);
+        true ->
+            io:format("NeverYield completed~n")
+        end
+    end,
+    Loop(0)
+end),
+
+% Process that yields periodically
+FrequentYield = spawn(fun() ->
+    Loop = fun LoopFun(Iterations) ->
+        if Iterations < 1000 ->
+            _ = lists:sum(lists:seq(1, 100)),
+            case Iterations rem 100 of
+                0 -> timer:sleep(0);  % Yield every 100 iterations
+                _ -> ok
+            end,
+            LoopFun(Iterations + 1);
+        true ->
+            io:format("FrequentYield completed~n")
+        end
+    end,
+    Loop(0)
+end),
+
+timer:sleep(1000),
+
+% Check their progress
+case process_info(NeverYield, reductions) of
+    {_, NeverRed} ->
+        io:format("NeverYield: ~p reductions~n", [NeverRed]);
+    undefined ->
+        io:format("NeverYield: completed~n")
+end,
+
+case process_info(FrequentYield, reductions) of
+    {_, FreqRed} ->
+        io:format("FrequentYield: ~p reductions~n", [FreqRed]);
+    undefined ->
+        io:format("FrequentYield: completed~n")
+end.
+```
+
+**Observe:** Yielding process may appear slower but allows other processes to run.
+
+**Discussion:** When should you manually yield? What's the cost? How does this affect system responsiveness?
+
+## Module 4 Review
+
+<!--
+quiz
+
+### Question 1
+
+How many scheduler threads does BEAM create by default?
+
+- [x] One per logical CPU (including hyperthreading)
+- [ ] One per physical CPU core only
+- [ ] Always 4 schedulers regardless of hardware
+- [ ] As many as needed based on process count
+
+### Question 2
+
+What happens when a process exhausts its reduction budget?
+
+- [x] It is preempted and moved to the back of its run queue
+- [ ] It crashes with a reduction_limit error
+- [ ] It continues running until it calls receive
+- [x] The scheduler picks the next process to run
+
+### Question 3
+
+Which process states do NOT consume scheduler time?
+
+- [x] SUSPENDED (blocked in receive)
+- [ ] RUNNING
+- [x] WAITING (in run queue but not executing)
+- [ ] GARBING (performing GC)
+
+### Question 4
+
+What is work stealing in BEAM's scheduler?
+
+- [ ] Processes stealing CPU time from other processes
+- [x] Idle schedulers taking processes from busy schedulers' run queues
+- [ ] High priority processes preempting low priority ones
+- [x] Load balancing mechanism to distribute work across cores
+
+### Question 5
+
+Why does BEAM use reduction-based scheduling instead of time-based?
+
+- [x] Ensures processes yield at safe, known execution points
+- [x] Avoids complexity of interrupting arbitrary VM state
+- [ ] Time-based scheduling is impossible in a VM
+- [ ] Reductions are faster to count than time
+
+### Question 6
+
+What is process priority's effect on scheduling?
+
+- [x] Higher priority processes run before lower priority ones
+- [ ] Priority determines reduction budget size
+- [x] Within same priority, FIFO order is used
+- [ ] Priority only affects process spawn order
+
+### Question 7
+
+When should you manually yield with `timer:sleep(0)`?
+
+- [x] When processing large batches to allow other processes to run
+- [ ] Never, the scheduler handles everything automatically
+- [x] In long-running loops that don't hit receive
+- [ ] After every function call for fairness
+
+### Question 8
+
+What does a consistently high run queue length indicate?
+
+- [ ] Efficient use of CPU resources
+- [x] More runnable processes than scheduler capacity
+- [x] Possible performance bottleneck
+- [ ] Normal operation under any load
+
+### Question 9
+
+How does process migration affect performance?
+
+- [x] Reduces CPU cache locality when process moves to new scheduler
+- [ ] Always improves performance through better load balance
+- [x] Trades cache performance for load balancing benefits
+- [ ] Has no performance impact
+
+### Question 10
+
+What operations automatically yield control before exhausting reductions?
+
+- [x] `receive` with no matching messages
+- [x] Long-running BIFs like file I/O
+- [ ] Arithmetic operations
+- [ ] Function calls
+-->
+
+```elixir
+Quiz.render_from_file(__DIR__ <> "/module-4-exercises.livemd", quiz: 1)
+```

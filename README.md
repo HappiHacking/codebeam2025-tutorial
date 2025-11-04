@@ -26,17 +26,23 @@ in case you don't have Elixir installed.
 ```shell
 # Running with the default configuration
 docker run -p 8080:8080 -p 8081:8081 --pull always ghcr.io/livebook-dev/livebook
+```
+In order to access and save notebooks directly to your machine
+you can mount a local directory into the container.
+Make sure to specify the user with "-u $(id -u):$(id -g)"
+so that the created files have proper permissions
 
-# In order to access and save notebooks directly to your machine
-# you can mount a local directory into the container.
-# Make sure to specify the user with "-u $(id -u):$(id -g)"
-# so that the created files have proper permissions
-docker run -p 8080:8080 -p 8081:8081 --pull always -u $(id -u):$(id -g) -v $(pwd):/data ghcr.io/livebook-dev/livebook
+```shell
+docker run -p 8080:8080 -p 8081:8081 --pull always -e LIVEBOOK_PASSWORD="codebeam2025" -u $(id -u):$(id -g) -v $(pwd)/livebooks:/data ghcr.io/livebook-dev/livebook
+```
 
-# You can configure Livebook using environment variables,
-# for all options see the dedicated "Environment variables" section below
-docker run -p 8080:8080 -p 8081:8081 --pull always -e LIVEBOOK_PASSWORD="securesecret" ghcr.io/livebook-dev/livebook
+You can configure Livebook using environment variables,
+for all options see the dedicated "Environment variables" section below
+```shell
+docker run -p 8080:8080 -p 8081:8081 --pull always -e LIVEBOOK_PASSWORD="codebeam2025" ghcr.io/livebook-dev/livebook
+```
 
-# Or if you need to run on different ports:
+Or if you need to run on different ports:
+```shell
 docker run -p 8090:8090 -p 8091:8091 --pull always -e LIVEBOOK_PORT=8090 -e LIVEBOOK_IFRAME_PORT=8091 ghcr.io/livebook-dev/livebook
 ```

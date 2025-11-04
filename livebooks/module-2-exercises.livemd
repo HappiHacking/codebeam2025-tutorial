@@ -1,0 +1,469 @@
+# Data Types & Messaging - Exercises
+
+```elixir
+Mix.install([{:kino, "~> 0.17.0"}])
+```
+
+```elixir
+Code.require_file("quiz.ex", __DIR__)
+Code.require_file("process_viz.ex", __DIR__)
+```
+
+## Introduction
+
+Welcome to the hands-on exercises for Data Types & Messaging!
+
+Each section has runnable code cells. Execute them, experiment, and observe what happens!
+
+## Term Size and Memory
+
+### Exercise 1: Measuring Term Sizes
+
+**Goal:** Understand the memory footprint of different BEAM data types and predict term sizes.
+
+##### Task 1.1: Measure Immediate Terms
+
+Immediates fit in one word and require no heap allocation.
+
+```erlang
+Measure = fun(Term) ->
+    Size = erts_debug:size(Term),
+    io:format("~p: ~p words~n", [Term, Size]),
+    {Term, Size}
+end,
+
+Measure(ok),
+Measure(42),
+Measure(error),
+Measure(nil).
+```
+
+**Observe:** All immediate terms show 0 words because they fit in the word itself.
+
+##### Task 1.2: Measure Boxed Terms
+
+Boxed terms require heap space.
+
+```erlang
+Measure({ok, 42}),
+Measure([1, 2, 3]),
+Measure(#{a => 1, b => 2}).
+```
+
+**Observe:** Tuple has overhead (header + elements). Lists use 2 words per element. Maps have additional overhead for keys.
+
+##### Task 1.3: Compare Large Data Structures
+
+```erlang
+SmallList = lists:seq(1, 10),
+LargeList = lists:seq(1, 1000),
+
+SmallMap = maps:from_list([{I, I} || I <- lists:seq(1, 5)]),
+LargeMap = maps:from_list([{I, I} || I <- lists:seq(1, 50)]),
+
+io:format("Small list (10 elements): ~p words~n", [erts_debug:size(SmallList)]),
+io:format("Large list (1000 elements): ~p words~n", [erts_debug:size(LargeList)]),
+io:format("Small map (5 keys): ~p words~n", [erts_debug:size(SmallMap)]),
+io:format("Large map (50 keys): ~p words~n", [erts_debug:size(LargeMap)]).
+```
+
+**Observe:** Lists scale linearly (2 words per element). Maps have overhead that changes at 33 keys (flatmap to HAMT transition).
+
+**Discussion:** When would you choose a tuple over a list for a fixed collection of 5 items? What about 500 items?
+
+## Binary Storage Modes
+
+### Exercise 2: Heap vs Reference-Counted Binaries
+
+**Goal:** Understand when binaries are stored on-heap vs off-heap and the impact on message passing.
+
+##### Task 2.1: Create Binaries of Different Sizes
+
+```erlang
+SmallBinary = <<"hello">>,
+MediumBinary = list_to_binary(lists:duplicate(63, $x)),
+LargeBinary = list_to_binary(lists:duplicate(64, $x)),
+HugeBinary = crypto:strong_rand_bytes(1024),
+
+io:format("Small (5 bytes): ~p words~n", [erts_debug:size(SmallBinary)]),
+io:format("Medium (63 bytes): ~p words~n", [erts_debug:size(MediumBinary)]),
+io:format("Large (64 bytes): ~p words~n", [erts_debug:size(LargeBinary)]),
+io:format("Huge (1024 bytes): ~p words~n", [erts_debug:size(HugeBinary)]).
+```
+
+**Observe:** The jump at 64 bytes. Below 64 bytes, binaries live on heap. At 64+ bytes, only a ProcBin wrapper is counted (payload is off-heap).
+
+##### Task 2.2: Measure Message Sending Cost
+
+```erlang
+Parent = self(),
+
+SendAndMeasure = fun(Payload) ->
+    {Time, _} = timer:tc(fun() ->
+        Receiver = spawn(fun() ->
+            receive
+                _ -> Parent ! done
+            end
+        end),
+        Receiver ! Payload,
+        receive done -> ok end
+    end),
+    io:format("~p bytes: ~p μs~n", [byte_size(Payload), Time])
+end,
+
+SendAndMeasure(<<"small">>),
+SendAndMeasure(list_to_binary(lists:duplicate(100, $x))),
+SendAndMeasure(list_to_binary(lists:duplicate(10000, $x))).
+```
+
+**Observe:** Large binaries are cheap to send because only the ProcBin is copied, not the payload.
+
+**Discussion:** When would you intentionally convert a large data structure to binary before sending it to multiple processes?
+
+## Message Copying Costs
+
+### Exercise 3: Understanding Message Copying
+
+**Goal:** Measure the cost of sending different data structures as messages.
+
+##### Task 3.1: Compare Message Types
+
+```erlang
+Receiver = spawn(fun() ->
+    Loop = fun LoopFun() ->
+        receive
+            stop -> ok;
+            _ -> LoopFun()
+        end
+    end,
+    Loop()
+end),
+register(receiver, Receiver),
+
+SendMany = fun(Payload, Count) ->
+    {Time, _} = timer:tc(fun() ->
+        [receiver ! Payload || _ <- lists:seq(1, Count)]
+    end),
+    Size = erts_debug:size(Payload),
+    io:format("Sent ~p x ~p words in ~p μs (~.2f μs/msg)~n",
+              [Count, Size, Time, Time / Count])
+end,
+
+SendMany({ok, 42}, 1000),
+SendMany(lists:seq(1, 100), 1000),
+SendMany(maps:from_list([{I, I} || I <- lists:seq(1, 50)]), 1000),
+SendMany(crypto:strong_rand_bytes(1024), 1000).
+```
+
+**Observe:** Small tuples are fast. Lists and maps copy the entire structure. Large binaries remain fast (only ProcBin copied).
+
+##### Task 3.2: Deep Nesting Impact
+
+```erlang
+ShallowData = [1, 2, 3, 4, 5],
+DeepData = [{user, I, [{email, <<"user@example.com">>}, {status, active}]} || I <- lists:seq(1, 100)],
+
+io:format("Shallow: ~p words~n", [erts_debug:size(ShallowData)]),
+io:format("Deep: ~p words~n", [erts_debug:size(DeepData)]),
+
+SendMany(ShallowData, 1000),
+SendMany(DeepData, 1000).
+```
+
+**Observe:** Deeply nested structures have higher copying costs due to recursive walks.
+
+**Discussion:** How would you redesign a message protocol that currently sends large nested maps to each worker?
+
+## Mailbox Scanning
+
+### Exercise 4: Selective Receive and Mailbox Performance
+
+**Goal:** Understand how mailbox scanning works and the importance of message tagging.
+
+##### Task 4.1: Create Messages with Different Tags
+
+```erlang
+Worker = spawn(fun() ->
+    Loop = fun LoopFun() ->
+        receive
+            {request, Ref, From} ->
+                From ! {response, Ref, done},
+                LoopFun();
+            stop -> ok
+        end
+    end,
+    Loop()
+end),
+register(worker, Worker).
+```
+
+##### Task 4.2: Send Tagged Request
+
+```erlang
+Ref = make_ref(),
+worker ! {request, Ref, self()},
+
+Response = receive
+    {response, Ref, Result} -> Result
+after
+    1000 -> timeout
+end,
+
+io:format("Received: ~p~n", [Response]).
+```
+
+**Observe:** The unique reference ensures we match only the intended reply, even if other messages exist.
+
+##### Task 4.3: Test with Mailbox Pollution
+
+```erlang
+% Add noise to mailbox
+[worker ! {request, make_ref(), self()} || _ <- lists:seq(1, 100)],
+
+% Our request should still work
+Ref2 = make_ref(),
+worker ! {request, Ref2, self()},
+
+Response2 = receive
+    {response, Ref2, Result} -> Result
+after
+    1000 -> timeout
+end,
+
+io:format("Still received: ~p~n", [Response2]).
+```
+
+**Observe:** Reference tagging allows precise matching despite mailbox clutter.
+
+**Discussion:** What happens if you use a sequential counter instead of make_ref() for request IDs in a distributed system?
+
+## Message Queue Data Modes
+
+### Exercise 5: On-Heap vs Off-Heap Queues
+
+**Goal:** Compare on-heap and off-heap message queue behavior under load.
+
+##### Task 5.1: Create On-Heap Receiver
+
+```erlang
+OnHeapWorker = spawn(fun() ->
+    Loop = fun LoopFun() ->
+        receive
+            {work, _N} ->
+                timer:sleep(10),
+                LoopFun();
+            stop -> ok
+        end
+    end,
+    Loop()
+end),
+register(on_heap_worker, OnHeapWorker).
+```
+
+##### Task 5.2: Create Off-Heap Receiver
+
+```erlang
+OffHeapWorker = spawn(fun() ->
+    process_flag(message_queue_data, off_heap),
+    Loop = fun LoopFun() ->
+        receive
+            {work, _N} ->
+                timer:sleep(10),
+                LoopFun();
+            stop -> ok
+        end
+    end,
+    Loop()
+end),
+register(off_heap_worker, OffHeapWorker).
+```
+
+##### Task 5.3: Send Burst of Messages
+
+```erlang
+SendBurst = fun(Name, Count) ->
+    [Name ! {work, I} || I <- lists:seq(1, Count)]
+end,
+
+SendBurst(on_heap_worker, 500),
+SendBurst(off_heap_worker, 500),
+
+timer:sleep(100),
+
+OnHeapInfo = process_info(whereis(on_heap_worker), [memory, message_queue_len]),
+OffHeapInfo = process_info(whereis(off_heap_worker), [memory, message_queue_len]),
+
+io:format("On-heap: ~p~n", [OnHeapInfo]),
+io:format("Off-heap: ~p~n", [OffHeapInfo]).
+```
+
+**Observe:** On-heap processes may show higher memory as messages live on the heap. Off-heap processes keep messages separate.
+
+**Discussion:** When would you configure a GenServer to use off_heap message queues in production?
+
+## Binary Construction
+
+### Exercise 6: Efficient Binary Building
+
+**Goal:** Learn to construct binaries efficiently using single allocation.
+
+##### Task 6.1: Inefficient Concatenation
+
+```erlang
+BuildInefficient = fun(Data) ->
+    Header = <<1, 2, 3>>,
+    DataSize = byte_size(Data),
+    Length = <<DataSize:32>>,
+    Header1 = binary:list_to_bin([Header, Length]),
+    binary:list_to_bin([Header1, Data])
+end,
+
+TestData = <<"test payload">>,
+{Time1, Result1} = timer:tc(fun() ->
+    [BuildInefficient(TestData) || _ <- lists:seq(1, 10000)]
+end),
+
+io:format("Inefficient: ~p μs~n", [Time1]).
+```
+
+##### Task 6.2: Efficient Single Allocation
+
+```erlang
+BuildEfficient = fun(Data) ->
+    DataSize = byte_size(Data),
+    <<1, 2, 3, DataSize:32, Data/binary>>
+end,
+
+{Time2, Result2} = timer:tc(fun() ->
+    [BuildEfficient(TestData) || _ <- lists:seq(1, 10000)]
+end),
+
+io:format("Efficient: ~p μs~n", [Time2]),
+io:format("Speedup: ~.2fx~n", [Time1 / Time2]).
+```
+
+**Observe:** Single allocation is significantly faster than multiple concatenations.
+
+##### Task 6.3: Using IOLists
+
+```erlang
+BuildIOList = fun(Data) ->
+    DataSize = byte_size(Data),
+    IOList = [<<1, 2, 3>>, <<DataSize:32>>, Data],
+    iolist_to_binary(IOList)
+end,
+
+{Time3, Result3} = timer:tc(fun() ->
+    [BuildIOList(TestData) || _ <- lists:seq(1, 10000)]
+end),
+
+io:format("IOList: ~p μs~n", [Time3]).
+```
+
+**Observe:** IOLists defer the final binary construction, allowing efficient building.
+
+**Discussion:** When building HTTP responses with headers and body, which approach would you use and why?
+
+
+## Module 2 Review
+
+<!--
+quiz
+
+### Question 1
+
+What is the threshold size at which a binary switches from heap storage to off-heap reference-counted storage?
+
+- [ ] 32 bytes
+- [ ] 48 bytes
+- [x] 64 bytes
+- [ ] 128 bytes
+
+### Question 2
+
+When you send a 1000-element list as a message to another process, what gets copied?
+
+- [ ] Only a pointer to the list
+- [x] Every cons cell (2000 words total)
+- [ ] Only the list header
+- [ ] Nothing, lists are always shared
+
+### Question 3
+
+Which data types are "immediate" and require no heap allocation?
+
+- [x] Small integers
+- [x] Atoms
+- [ ] Floats
+- [x] Empty list (nil)
+- [ ] Tuples
+
+### Question 4
+
+You send a 10MB binary to 100 processes. Approximately how much memory gets copied?
+
+- [ ] 1000 MB (10MB × 100 processes)
+- [x] About 4-7 KB (only ProcBin wrappers)
+- [ ] 10 MB (once, then shared)
+- [ ] 0 bytes (binaries are never copied)
+
+### Question 5
+
+What happens when a small map grows from 32 keys to 33 keys?
+
+- [ ] It gets stored off-heap
+- [x] It transitions from flatmap to HAMT representation
+- [ ] It gets automatically compressed
+- [ ] It becomes immutable
+
+### Question 6
+
+Why should you use `make_ref()` for request-response patterns?
+
+- [x] It creates a globally unique reference for precise matching
+- [ ] It's faster than using atoms
+- [ ] It prevents mailbox overflow
+- [x] It allows selective receive to skip unrelated messages efficiently
+- [ ] It automatically times out old requests
+
+### Question 7
+
+What is the main benefit of setting `message_queue_data` to `off_heap` for a process?
+
+- [ ] Messages are processed faster
+- [x] Garbage collection doesn't need to scan unmatched messages
+- [ ] Messages use less memory
+- [ ] The mailbox has unlimited capacity
+
+### Question 8
+
+When building binary data, which approach is most efficient?
+
+- [ ] Concatenating binaries with `<>` or `<<B1/binary, B2/binary>>` in a loop
+- [x] Single binary comprehension: `<<header, size::32, data/binary>>`
+- [x] Building an iolist and converting once with `iolist_to_binary/1`
+- [ ] Using `binary:copy/1` repeatedly
+
+### Question 9
+
+A list `[1, 2, 3]` allocates how many words on the heap?
+
+- [ ] 3 words (one per element)
+- [ ] 4 words (header + 3 elements)
+- [x] 6 words (2 words per cons cell: head + tail)
+- [ ] 0 words (small integers are immediate)
+
+### Question 10
+
+What happens to large binaries when sending a message to a process on a remote node?
+
+- [x] The binary payload is serialized and sent over the network
+- [ ] Only a reference is sent; payload stays local
+- [ ] Large binaries are shared via reference counting across nodes
+- [x] Unlike local sends, refc binaries are fully copied for remote sends
+-->
+
+```elixir
+Quiz.render_from_file(__DIR__ <> "/module-2-exercises.livemd", quiz: 1)
+```
+

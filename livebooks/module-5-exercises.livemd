@@ -1,0 +1,479 @@
+# Debugging & Observability - Exercises
+
+```elixir
+Mix.install([{:kino, "~> 0.17.0"}])
+```
+
+```elixir
+Code.require_file("quiz.ex", __DIR__)
+Code.require_file("process_viz.ex", __DIR__)
+```
+
+## Introduction
+
+Welcome to the hands-on exercises for Debugging & Observability!
+
+Each section has runnable code cells. Execute them, experiment, and observe what happens!
+
+## Hands-On Exercises
+
+### Exercise 1: Process Introspection & Monitoring
+
+**Goal:** Learn to inspect process state and build monitoring tools to detect problems early.
+
+##### Task 1.1: Inspect Process Memory
+
+Spawn a process and examine its memory characteristics:
+
+```erlang
+% Create a process with proper function syntax
+Pid = spawn(fun() ->
+    Loop = fun LoopFun() ->
+        receive
+            stop -> ok;
+            _ -> LoopFun()
+        end
+    end,
+    Loop()
+end),
+
+register(inspector_target, Pid),
+
+Info = erlang:process_info(Pid, [memory, heap_size, total_heap_size]),
+io:format("Process info: ~p~n", [Info]).
+```
+
+**Observe:** The memory field shows total bytes used. Heap size is in words (multiply by 8 for bytes on 64-bit systems).
+
+##### Task 1.2: Monitor Message Queue Growth
+
+Send messages faster than they can be processed:
+
+```erlang
+% Spawn a slow worker with proper function syntax
+SlowPid = spawn(fun() ->
+    SlowLoop = fun LoopFun(Count) ->
+        receive
+            work ->
+                timer:sleep(100),
+                LoopFun(Count + 1);
+            {get_count, From} ->
+                From ! {count, Count},
+                LoopFun(Count)
+        end
+    end,
+    SlowLoop(0)
+end),
+
+register(slow_worker, SlowPid),
+
+[slow_worker ! work || _ <- lists:seq(1, 50)],
+
+{message_queue_len, QLen} = erlang:process_info(SlowPid, message_queue_len),
+io:format("Queue length: ~p messages~n", [QLen]).
+```
+
+```elixir
+# Visualize process mailbox
+ProcessViz.render_mailbox(:slow_worker, limit: 20)
+```
+
+**Observe:** Messages queue up because processing takes 100ms each. At 50 messages, this will take 5 seconds to drain.
+
+##### Task 1.3: Track Reduction Consumption
+
+Monitor which processes consume the most CPU:
+
+```erlang
+% Create a busy work function with proper syntax
+BusyPid = spawn(fun() ->
+    BusyWork = fun LoopFun(N) ->
+        case N of
+            0 -> done;
+            _ ->
+                lists:sum(lists:seq(1, 1000)),
+                LoopFun(N - 1)
+        end
+    end,
+    BusyWork(1000)  % Increased to ensure process is still alive
+end),
+
+% Give it time to work
+timer:sleep(100),
+
+% Safely get process info (handle undefined case)
+case erlang:process_info(BusyPid, reductions) of
+    {reductions, Reds} ->
+        io:format("Reductions consumed: ~p~n", [Reds]);
+    undefined ->
+        io:format("Process already finished~n")
+end.
+```
+
+**Discussion:** Reductions measure CPU work. High reduction counts indicate CPU-intensive processes. How would you identify the top 5 CPU-consuming processes in a production system?
+
+### Exercise 2: System-Wide Observability
+
+**Goal:** Use system-wide tools to collect metrics and identify resource bottlenecks.
+
+##### Task 2.1: Collect System Memory Breakdown
+
+Get a comprehensive view of memory allocation:
+
+```erlang
+Memory = erlang:memory(),
+% erlang:memory() returns a proplist, not a map - use proplists:get_value
+TotalMB = proplists:get_value(total, Memory) / (1024 * 1024),
+ProcessesMB = proplists:get_value(processes, Memory) / (1024 * 1024),
+BinaryMB = proplists:get_value(binary, Memory) / (1024 * 1024),
+EtsMB = proplists:get_value(ets, Memory) / (1024 * 1024),
+
+io:format("Total: ~.2f MB~n", [TotalMB]),
+io:format("Processes: ~.2f MB~n", [ProcessesMB]),
+io:format("Binary: ~.2f MB~n", [BinaryMB]),
+io:format("ETS: ~.2f MB~n", [EtsMB]).
+```
+
+**Observe:** Process memory includes heap and mailboxes. Binary memory holds large binaries. ETS tables have their own allocation.
+
+##### Task 2.2: Find Memory-Heavy Processes
+
+Identify the top memory consumers:
+
+```erlang
+% Get all processes and their memory usage (using built-in functions)
+AllProcs = [{P, erlang:process_info(P, [memory, registered_name])}
+            || P <- erlang:processes()],
+
+% Filter out any dead processes (process_info returns undefined)
+ValidProcs = [{P, Info} || {P, Info} <- AllProcs, Info =/= undefined],
+
+% Sort by memory usage
+Sorted = lists:sort(fun({_, InfoA}, {_, InfoB}) ->
+    proplists:get_value(memory, InfoA) > proplists:get_value(memory, InfoB)
+end, ValidProcs),
+
+% Take top 5
+Top5 = lists:sublist(Sorted, 5),
+
+io:format("Top 5 processes by memory:~n"),
+[begin
+    {memory, Bytes} = proplists:lookup(memory, Info),
+    Name = case proplists:get_value(registered_name, Info) of
+        undefined -> Pid;
+        RegName -> RegName
+    end,
+    MB = Bytes / (1024 * 1024),
+    io:format("  ~p: ~.2f MB~n", [Name, MB])
+end || {Pid, Info} <- Top5].
+```
+
+**Observe:** This manual approach works without external libraries. In production, consider using recon library for more efficient process inspection.
+
+##### Task 2.3: Check Scheduler Balance
+
+Monitor scheduler utilization to detect imbalance:
+
+```erlang
+erlang:system_flag(scheduler_wall_time, true),
+timer:sleep(1000),
+
+Usage = erlang:statistics(scheduler_wall_time),
+
+[begin
+    {SchedId, Active, Total} = Sched,
+    Util = case Total of
+        0 -> 0.0;
+        _ -> (Active / Total) * 100
+    end,
+    io:format("Scheduler ~p: ~.1f% utilized~n", [SchedId, Util])
+end || Sched <- Usage],
+
+erlang:system_flag(scheduler_wall_time, false).
+```
+
+**Discussion:** Unbalanced schedulers indicate some processes monopolize certain schedulers. What causes scheduler imbalance, and how can you fix it?
+
+### Exercise 3: Tracing & Profiling
+
+**Goal:** Use tracing to understand execution flow and identify performance bottlenecks.
+
+##### Task 3.1: Trace Function Calls
+
+Set up basic function call tracing:
+
+```erlang
+dbg:tracer(),
+dbg:p(all, [call]),
+
+dbg:tp(lists, seq, []),
+
+lists:seq(1, 5),
+lists:seq(10, 15),
+
+timer:sleep(100),
+dbg:stop_clear().
+```
+
+**Observe:** The tracer shows every call to `lists:seq/2` with arguments. Tracing has overhead, so limit the scope in production.
+
+##### Task 3.2: Trace Messages Between Processes
+
+Monitor message passing:
+
+```erlang
+Receiver = spawn(fun() ->
+    receive
+        {msg, N} -> io:format("Received: ~p~n", [N])
+    after
+        5000 -> timeout
+    end
+end),
+register(receiver, Receiver),
+
+dbg:tracer(),
+dbg:p(Receiver, [send, 'receive']),
+
+Receiver ! {msg, 42},
+
+timer:sleep(100),
+dbg:stop_clear().
+```
+
+**Observe:** The tracer shows both the send and receive events with message content. This helps debug message flow issues.
+
+##### Task 3.3: Basic Tracing with Built-in Tools
+
+Use built-in tracing with manual rate limiting:
+
+```erlang
+% Create a worker process
+Worker = spawn(fun() ->
+    WorkerLoop = fun Loop() ->
+        receive
+            {compute, N} ->
+                Result = lists:sum(lists:seq(1, N)),
+                io:format("Computed sum(1..~p) = ~p~n", [N, Result]),
+                Loop();
+            stop -> ok
+        after
+            10000 ->
+                io:format("Worker timeout~n"),
+                ok
+        end
+    end,
+    WorkerLoop()
+end),
+
+register(compute_worker, Worker),
+
+% Set up basic tracing using dbg
+dbg:tracer(),
+dbg:p(Worker, [c, m]),  % Trace calls and messages
+
+% Trace calls to lists:sum/1 (with manual limiting)
+dbg:tp(lists, sum, 1, []),
+
+% Send work to the process
+Worker ! {compute, 100},
+Worker ! {compute, 200},
+Worker ! {compute, 300},
+
+timer:sleep(500),
+
+% Clean up
+Worker ! stop,
+dbg:stop_clear().
+```
+
+**Observe:** Built-in dbg provides tracing but requires manual management. In production, consider using recon library for safer, rate-limited tracing.
+
+**Discussion:** When would you use `:dbg` versus recon_trace? What risks does unlimited tracing pose?
+
+### Exercise 4: Production Debugging Strategies
+
+**Goal:** Diagnose and respond to common production issues under realistic constraints.
+
+##### Task 4.1: Detect Memory Growth
+
+Monitor memory over time to identify leaks:
+
+```erlang
+Snapshot1 = erlang:memory(total),
+
+% Create a process that leaks memory with proper function syntax
+MemoryLeak = spawn(fun() ->
+    LeakLoop = fun LoopFun(Data) ->
+        receive
+            add_data ->
+                NewData = [crypto:strong_rand_bytes(10240) | Data],
+                LoopFun(NewData);
+            stop -> ok
+        after
+            1000 ->
+                NewData = [crypto:strong_rand_bytes(10240) | Data],
+                LoopFun(NewData)
+        end
+    end,
+    LeakLoop([])
+end),
+register(leaky_process, MemoryLeak),
+
+timer:sleep(5000),
+
+Snapshot2 = erlang:memory(total),
+Growth = (Snapshot2 - Snapshot1) / (1024 * 1024),
+io:format("Memory grew by ~.2f MB~n", [Growth]),
+
+{memory, LeakMemory} = erlang:process_info(MemoryLeak, memory),
+io:format("Leaky process using ~.2f MB~n", [LeakMemory / (1024 * 1024)]),
+
+exit(MemoryLeak, kill).
+```
+
+**Observe:** The process accumulates data indefinitely. In production, use recon:proc_count/2 to find such processes.
+
+##### Task 4.2: Drain Message Backlogs
+
+Handle processes with overflowing mailboxes:
+
+```erlang
+Stalled = spawn(fun() ->
+    receive
+        go -> io:format("Processing started~n")
+    after
+        30000 -> timeout
+    end
+end),
+register(stalled_worker, Stalled),
+
+[Stalled ! {work, N} || N <- lists:seq(1, 1000)],
+
+{message_queue_len, BeforeLen} = erlang:process_info(Stalled, message_queue_len),
+io:format("Mailbox before: ~p messages~n", [BeforeLen]),
+
+exit(Stalled, kill),
+io:format("Process killed to clear mailbox~n").
+```
+
+**Observe:** Killing a process immediately clears its mailbox. Supervisors can restart it clean.
+
+##### Task 4.3: Emergency Garbage Collection
+
+Force GC across processes to free memory:
+
+```erlang
+BeforeMem = erlang:memory(total),
+
+[erlang:garbage_collect(P) || P <- erlang:processes()],
+
+AfterMem = erlang:memory(total),
+Freed = (BeforeMem - AfterMem) / (1024 * 1024),
+io:format("Freed ~.2f MB via GC~n", [Freed]).
+```
+
+**Observe:** Forcing GC can free memory but has a performance cost. Use only during emergencies.
+
+**Discussion:** What are the risks of force-killing processes in production? How do supervision trees help recover safely?
+
+
+## Debugging & Observability
+
+<!--
+quiz
+
+### Question 1
+
+You notice a process with 10,000 messages in its mailbox. What can happen?
+
+- [ ] The VM will automatically throttle senders
+- [x] The process will use more memory to store queued messages
+- [ ] Messages will be dropped after reaching a limit
+- [x] The process may become slow due to selective receive scanning
+
+### Question 2
+
+What does the `reductions` metric indicate?
+
+- [ ] Number of messages sent
+- [ ] Heap size in bytes
+- [x] Amount of CPU work performed
+- [ ] Number of process crashes
+
+### Question 3
+
+A process is using 500MB of memory. Which tools help identify what it's storing?
+
+- [x] :erlang.process_info(pid, :memory)
+- [x] :recon.proc_count(:memory, 10)
+- [ ] :observer.start() (GUI tool)
+- [ ] :dbg.tracer()
+
+### Question 4
+
+Scheduler utilization shows: Scheduler 1 at 95%, Scheduler 2 at 10%. What does this indicate?
+
+- [ ] The system is perfectly balanced
+- [x] Workload is not evenly distributed across schedulers
+- [ ] Scheduler 2 has failed
+- [x] Some processes may be pinned to specific schedulers
+
+### Question 5
+
+When should you use `:dbg` for tracing in production?
+
+- [ ] Always, it has no performance impact
+- [ ] Only during scheduled maintenance windows
+- [x] Carefully, with specific filters to limit trace volume
+- [ ] Never, use recon_trace instead for safety
+
+### Question 6
+
+A binary memory leak occurs when:
+
+- [ ] Processes send too many messages
+- [x] Sub-binaries keep references to large parent binaries
+- [ ] ETS tables grow without bounds
+- [ ] Schedulers become imbalanced
+
+### Question 7
+
+What happens when you call :erlang.garbage_collect/1 on a process?
+
+- [x] Forces immediate garbage collection on that process
+- [ ] Terminates the process and frees its memory
+- [ ] Clears the process mailbox
+- [ ] Resets the process reduction counter
+
+### Question 8
+
+How can you safely identify the top CPU-consuming processes in production?
+
+- [ ] Use :erlang.processes() and check each one manually
+- [x] Use :recon.proc_count(:reductions, 10)
+- [ ] Enable full :dbg tracing on all processes
+- [x] Monitor :erlang.statistics(:scheduler_wall_time)
+
+### Question 9
+
+A process dies during `:erlang.process_info/2`. What does the function return?
+
+- [ ] An error tuple {:error, :dead}
+- [ ] Crashes your shell process
+- [x] Returns `undefined`
+- [ ] Waits indefinitely for the process to restart
+
+### Question 10
+
+Circuit breakers in monitoring systems help by:
+
+- [x] Preventing cascading failures when checks fail repeatedly
+- [ ] Physically disconnecting hardware in emergencies
+- [x] Temporarily disabling failing health checks to allow recovery
+- [ ] Killing problematic processes automatically
+-->
+
+```elixir
+Quiz.render_from_file(__DIR__ <> "/module-5-exercises.livemd", quiz: 1)
+```
+

@@ -1,0 +1,11 @@
+{application, chat_server,
+ [{description, "BEAM Tutorial Chat Server - Demonstrates binary leak"},
+  {vsn, "1.0.0"},
+  {registered, [chat_server_sup]},
+  {mod, {chat_server_app, []}},
+  {applications, [kernel, stdlib]},
+  {env, []},
+  {modules, []},
+  {licenses, ["Apache-2.0"]},
+  {links, []}
+ ]}.

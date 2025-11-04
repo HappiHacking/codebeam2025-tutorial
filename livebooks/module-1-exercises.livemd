@@ -1,0 +1,118 @@
+# Thinking in Processes - Exercises
+
+```elixir
+Mix.install([{:kino, "~> 0.17.0"}])
+```
+
+```elixir
+Code.require_file("quiz.ex", __DIR__)
+Code.require_file("process_viz.ex", __DIR__)
+```
+
+## Introduction
+
+Welcome to the hands-on exercises for Thinking in Processes!
+
+Each section has runnable code cells. Execute them, experiment, and observe what happens!
+
+
+## Module 1 Review
+
+<!--
+quiz
+
+### Question 1
+
+Why does per-process garbage collection prevent global pauses?
+
+- [x] Each process has its own heap and GC runs independently
+- [ ] GC is disabled in the BEAM
+- [x] A GC pause in one process doesn't block other processes
+- [ ] Processes share a heap but GC runs in parallel
+
+### Question 2
+
+In OOP with shared state, what problem does the BEAM avoid through process isolation?
+
+- [x] Race conditions on shared mutable data
+- [x] Deadlocks from lock contention
+- [ ] Memory leaks from garbage collection
+- [ ] Slow message passing
+
+### Question 3
+
+How does the BEAM scheduler ensure fairness among processes?
+
+- [ ] Each process gets exactly 10ms of CPU time
+- [x] Processes are preempted after consuming a reduction budget
+- [ ] Processes voluntarily yield when they call receive
+- [x] Reduction counting allows fair scheduling without timer interrupts
+
+### Question 4
+
+What is the trade-off of process isolation (message copying)?
+
+- [x] Safety and fault tolerance at the cost of copying overhead
+- [ ] Faster performance but less reliability
+- [ ] Lower memory usage but higher CPU usage
+- [x] No shared state bugs, but measurable copy cost for large data
+
+### Question 5
+
+When would you use ETS instead of message passing between processes?
+
+- [x] For shared read-mostly configuration data
+- [ ] For all inter-process communication
+- [x] When copy cost outweighs isolation benefits
+- [ ] Never, ETS breaks the actor model
+
+### Question 6
+
+In a process-oriented architecture, where should state live?
+
+- [x] In individual process heaps when each entity owns its state
+- [x] In ETS or databases when state must survive process restarts
+- [ ] In a global shared data structure protected by locks
+- [x] Distributed across processes with clear ownership boundaries
+
+### Question 7
+
+What happens when you force GC on a process with a 100MB heap?
+
+- [ ] All processes pause until GC completes
+- [x] Only that process pauses; others continue working
+- [ ] The VM triggers a global GC
+- [ ] The process crashes if GC takes too long
+
+### Question 8
+
+Why use reduction-based scheduling instead of time-based preemption?
+
+- [x] Ensures processes yield at safe, known points in execution
+- [x] Avoids complexity of interrupting arbitrary VM state
+- [ ] Reduction counting is more accurate for fairness
+- [ ] Reduction counting uses less CPU overhead
+
+### Question 9
+
+In the OOP order processing example, what does the BEAM approach replace locks with?
+
+- [ ] Faster locks using atomic operations
+- [x] Message passing through isolated process mailboxes
+- [ ] Optimistic concurrency with retry logic
+- [x] Serialization of updates through a single process
+
+### Question 10
+
+What is the key architectural difference between the "machine park" and "gnome village"?
+
+- [x] Machines share state and require locks; gnomes have private state
+- [x] Machine failures cascade; gnome failures are isolated
+- [ ] Machines are faster but less reliable
+- [ ] Gnomes use more memory per worker
+-->
+
+```elixir
+Quiz.render_from_file(__DIR__ <> "/module-1-exercises.livemd", quiz: 1)
+```
+
