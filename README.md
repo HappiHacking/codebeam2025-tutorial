@@ -3,7 +3,8 @@
 ## Files
 
 - `livebooks/`: Livebook exercises (see below)
-- `chat_server/`: Chat server project
+- `chat_project/`: Chat server workshop project, with first step given :)
+- `chat_server/`: Alternative chat server project
 - `code_examples/`: other project ideas
 - `pdf/`: Slide handouts
 
